@@ -5,7 +5,7 @@ pkg/test:
   stage: test
   image: python:latest
   script:
-    - pip install .
+    - pip install '.[dev]'
     - pytest
   tags:
     - docker

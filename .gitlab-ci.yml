@@ -6,7 +6,7 @@ pkg/test:
   image: python:latest
   script:
     - pip install '.[dev]'
-    - pytest
+    - pytest -vs
   tags:
     - docker
     - bash

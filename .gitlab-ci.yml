@@ -1,0 +1,12 @@
+#########
+# Testing
+#########
+pkg/test:
+  stage: test
+  image: python:latest
+  script:
+    - pip install .
+    - pytest
+  tags:
+    - docker
+    - bash

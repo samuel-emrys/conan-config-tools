@@ -9,7 +9,6 @@ description = "A tool to facilitate configuration of conan across operating syst
 authors = [{ name = "Samuel Dowling", email = "samuel.dowling@protonmail.com" }]
 readme = "README.md"
 dependencies = [
-    "conan",
     "click",
 ]
 

@@ -66,10 +66,10 @@ def test_profile_does_not_exist_does_not_throw(caplog, mock_conan_home):
         assert record.levelname != "CRITICAL"
 
 def test_invalid_setting_is_sanitized_from_profile_when_forced(caplog, mock_conan_home):
-    # cct -v --conan-home . set-profile -f -n test -s compiler="Visual Studio" -s compiler.libcxx=libstdc++11
+    # cct -v --conan-home . set-profile -f -n test -s compiler="Visual Studio" -s compiler.libcxx=""
     # Invoke the CLI
     runner = CliRunner()
-    result = runner.invoke(cli, ["-v", "--conan-home", mock_conan_home, "set-profile", "-f", "-n", "test", "-s", "compiler=Visual Studio", "-s", "compiler.libcxx=libstdc++11"])
+    result = runner.invoke(cli, ["-v", "--conan-home", mock_conan_home, "set-profile", "-f", "-n", "test", "-s", "compiler=Visual Studio", "-s", "compiler.libcxx="])
 
     assert result.exit_code == 0
     for record in caplog.records:

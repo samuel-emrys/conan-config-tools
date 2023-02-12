@@ -10,6 +10,7 @@ authors = [{ name = "Samuel Dowling", email = "samuel.dowling@protonmail.com" }]
 readme = "README.md"
 dependencies = [
     "click",
+    "pyyaml",
 ]
 
 [project.optional-dependencies]

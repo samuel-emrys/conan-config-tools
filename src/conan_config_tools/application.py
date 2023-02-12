@@ -3,6 +3,7 @@ from conan_config_tools import logger
 from conan_config_tools import program_log
 import logging
 import configparser
+import copy
 import platform
 import pathlib
 import yaml
@@ -44,8 +45,8 @@ def set_profile(ctx, **kwargs):
         "arch_build": _get_arch(),
     }
 
-    settings = kwargs["setting"]
-    _validate_settings(ctx.obj.get("conan_home"), settings)
+    settings = _validate_settings(ctx.obj.get("conan_home"), kwargs["setting"], kwargs["force"])
+    program_log.debug(f"{settings=}")
 
     for setting, value in default_fields.items():
         if setting not in settings.keys():
@@ -71,19 +72,42 @@ def set_profile(ctx, **kwargs):
     return
 
 
-def _validate_settings(conan_home, settings):
+def _validate_settings(conan_home, settings, force):
     settings_yml = {}
     settings_yml_path = pathlib.Path(conan_home, "settings.yml")
+    if not settings_yml_path.exists():
+        user_settings_yml_path = settings_yml_path
+        settings_yml_path = pathlib.Path(pathlib.Path.home(), ".conan", "settings.yml")
+        program_log.warning(f"settings.yml does not exist in the user specified conan home '{user_settings_yml_path}'. Attempting to fall back to '{settings_yml_path}'")
     try:
         with open(settings_yml_path, "r") as f:
             settings_yml = yaml.safe_load(f)
+            program_log.debug(f"Successfully loaded settings from '{settings_yml_path}'")
     except:
         program_log.warning(f"Could not open settings.yml: '{settings_yml_path}' does not exist. Settings not validated. Continuing.")
-        return
+        return settings
 
-    for key, value in settings.items():
-        if key.split(".")[0] not in settings_yml.keys():
-            raise ValueError(f"{key} not a valid setting.")
+    for key, value in list(settings.items()):
+        key_list = key.split(".")
+        if len(key_list) > 1 and "compiler" in key_list:
+            key_list.insert(1, settings["compiler"])
+        settings_values = _get_value(key_list, settings_yml)
+        if not settings_values:
+            invalid_setting_msg = f"'{key}' is not a valid setting for compiler {settings['compiler']}!"
+            if not force:
+                program_log.critical(f"{invalid_setting_msg} Force removal of invalid keys with -f")
+                raise ValueError(f"{invalid_setting_msg} Force removal of invalid keys with -f")
+            invalid_setting_msg = f"{invalid_setting_msg} Sanitizing '{key}' from profile."
+            program_log.warning(invalid_setting_msg)
+            del settings[key]
+        else:
+            if isinstance(settings_values, dict):
+                settings_values = list(settings_values.keys())
+            if value not in settings_values:
+                program_log.warning(f"'{key}' has an invalid value! {value} is not one of '{settings_values}'")
+            else:
+                program_log.debug(f"'{key}={value}' successfully validated")
+    return settings
 
 def _get_arch():
     arch = platform.machine()
@@ -102,3 +126,10 @@ def _set_log_verbosity(verbosity):
             logger.adjust_handler_level(
                 program_log, logging.StreamHandler, logging.DEBUG
             )
+
+def _get_value(key_list, dict_):
+    reduced = copy.deepcopy(dict_)
+    for key in key_list:
+        if reduced:
+            reduced = reduced.get(key)
+    return reduced

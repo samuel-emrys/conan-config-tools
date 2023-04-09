@@ -1,12 +1,19 @@
-from conan_config_tools import ROOT_DIR
-from conan_config_tools import logger
-from conan_config_tools import program_log
+import io
 import logging
-import configparser
-import copy
-import platform
 import pathlib
-import yaml
+import re
+from contextlib import redirect_stderr
+
+from conan.api.conan_api import ConanAPI
+from conan.tools.env.environment import ProfileEnvironment
+from conans.client.cache.cache import ClientCache
+from conans.client.profile_loader import ProfileLoader, _profile_parse_args
+from conans.errors import ConanException
+from conans.model.profile import Profile
+from conans.util.files import save
+
+from conan_config_tools import logger, program_log
+
 
 def set_remotes(ctx, **kwargs):
     """Configure the list of remotes for conan to use"""
@@ -25,8 +32,9 @@ def set_profile(ctx, **kwargs):
     program_log.debug(f"Context values: {ctx.obj}")
     program_log.debug(f"Keyword Arguments: {kwargs}")
 
+    conan_home = pathlib.Path(ctx.obj.get("conan_home")).resolve()
     profile_name = kwargs["name"]
-    profile_dir = pathlib.Path(ctx.obj.get("conan_home"), "profiles")
+    profile_dir = pathlib.Path(conan_home, "profiles")
     profile_path = pathlib.Path(profile_dir, profile_name)
 
     if profile_path.exists():
@@ -36,84 +44,83 @@ def set_profile(ctx, **kwargs):
             )
             return
         else:
-            program_log.warning(f"Profile '{profile_name}' already exists! Overwriting.")
+            program_log.warning(
+                f"Profile '{profile_name}' already exists! Overwriting."
+            )
 
-    default_fields = {
-        "os": platform.system(),
-        "os_build": platform.system(),
-        "arch": _get_arch(),
-        "arch_build": _get_arch(),
+    # Transform arguments to {'settings': ["compiler=gcc", "compiler.version=11"]} format
+    args = {
+        "settings": _dict_to_keyval_list(kwargs["setting"], delimiter="="),
+        "options": _dict_to_keyval_list(kwargs["option"], delimiter="="),
+        "conf": _dict_to_keyval_list(kwargs["conf"], delimiter="="),
     }
+    buildenv = _dict_to_keyval_list(kwargs["buildenv"], delimiter="=")
+    runenv = _dict_to_keyval_list(kwargs["runenv"], delimiter="=")
+    program_log.debug(f"Conan args: {args}")
 
-    settings = _validate_settings(ctx.obj.get("conan_home"), kwargs["setting"], kwargs["force"])
-    program_log.debug(f"{settings=}")
+    conan_api = ConanAPI(cache_folder=conan_home)
+    cache = ClientCache(conan_home)
 
-    for setting, value in default_fields.items():
-        if setting not in settings.keys():
-            settings[setting] = value
+    f = io.StringIO()
+    with redirect_stderr(f):
+        base_profile = conan_api.profiles.detect()
 
-    config = configparser.ConfigParser()
-    config["settings"] = settings
-    config["options"] = kwargs["option"]
-    config["build_requires"] = kwargs["build_requires"]
-    config["env"] = kwargs["env"]
-    config["conf"] = kwargs["conf"]
-    config["buildenv"] = kwargs["buildenv"]
+    # Construct a profile from the base detected profile
+    profile = Profile()
+    profile.compose_profile(base_profile)
+    args_profile = _profile_parse_args(**args)
+    # Add command line specified arguments to the profile
+    profile.compose_profile(args_profile)
+    # Make sure the conf settings in the profile are valid
+    profile.conf.validate()
 
-    try:
-        profile_dir.mkdir(parents=True, exist_ok=True)
-        with open(profile_path, "w") as profile:
-            program_log.info(f"Writing profile '{profile_name}' to '{profile_path}'")
-            config.write(profile, space_around_delimiters=False)
-            program_log.info(f"Successfully wrote profile '{profile_name}' to '{profile_path}'")
-    except:
-        program_log.critical(f"Could not open file '{profile_path}'. Profile not written. Exiting.")
+    # Load conan_home/extensions/plugins/profile.py to validate cppstd
+    loader = ProfileLoader(cache)
+    profile_plugin = loader._load_profile_plugin()
+    if profile_plugin is not None:
+        profile_plugin(profile)
+    # Ensure the settings specified in the profile are valid or sanitized
+    _validate_settings(profile, cache, kwargs["force"])
 
+    # Append environment information to profile
+    profile.buildenv = ProfileEnvironment.loads("\n".join(buildenv))
+    profile.runenv = ProfileEnvironment.loads("\n".join(runenv))
+    # Add tool_requires patterns to profile
+    for pattern, references in kwargs["tool_requires"].items():
+        profile.tool_requires[pattern] = references
+    program_log.debug(f"{profile}")
+    # Save profile to disk
+    save(profile_path, profile.dumps())
+    program_log.info(f"Successfully wrote profile '{profile_name}' to '{profile_path}'")
     return
 
 
-def _validate_settings(conan_home, settings, force):
-    settings_yml = {}
-    settings_yml_path = pathlib.Path(conan_home, "settings.yml")
-    if not settings_yml_path.exists():
-        user_settings_yml_path = settings_yml_path
-        settings_yml_path = pathlib.Path(pathlib.Path.home(), ".conan", "settings.yml")
-        program_log.warning(f"settings.yml does not exist in the user specified conan home '{user_settings_yml_path}'. Attempting to fall back to '{settings_yml_path}'")
-    try:
-        with open(settings_yml_path, "r") as f:
-            settings_yml = yaml.safe_load(f)
-            program_log.debug(f"Successfully loaded settings from '{settings_yml_path}'")
-    except:
-        program_log.warning(f"Could not open settings.yml: '{settings_yml_path}' does not exist. Settings not validated. Continuing.")
-        return settings
+def _validate_settings(profile: Profile, cache: ClientCache, force: bool):
+    """Ensure that the settings in the provided profile are consistent with settings.yml in the cache.
 
-    for key, value in list(settings.items()):
-        key_list = key.split(".")
-        if len(key_list) > 1 and "compiler" in key_list:
-            key_list.insert(1, settings["compiler"])
-        settings_values = _get_value(key_list, settings_yml)
-        if not settings_values:
-            invalid_setting_msg = f"'{key}' is not a valid setting for compiler {settings['compiler']}!"
+    :param profile: The profile to validate
+    :type profile: `Profile`
+    :param cache: The conan cache object
+    :type cache: `ClientCache`
+    :param force: A boolean flag indicating whether invalid settings should be sanitized or not. True
+    indicates that invalid values will be removed from the profile.
+    :type force: bool
+    """
+    while True:
+        try:
+            profile.process_settings(cache)
+            break
+        except ConanException as e:
             if not force:
-                program_log.critical(f"{invalid_setting_msg} Force removal of invalid keys with -f")
-                raise ValueError(f"{invalid_setting_msg} Force removal of invalid keys with -f")
-            invalid_setting_msg = f"{invalid_setting_msg} Sanitizing '{key}' from profile."
-            program_log.warning(invalid_setting_msg)
-            del settings[key]
-        else:
-            if isinstance(settings_values, dict):
-                settings_values = list(settings_values.keys())
-            if value not in settings_values:
-                program_log.warning(f"'{key}' has an invalid value! {value} is not one of '{settings_values}'")
+                program_log.critical(f"{e}. Use `-f` to force removal of invalid keys.")
+                raise ValueError(e)
             else:
-                program_log.debug(f"'{key}={value}' successfully validated")
-    return settings
-
-def _get_arch():
-    arch = platform.machine()
-    if arch == "AMD64":
-        return "x86_64"
-    return arch
+                profile.processed_settings = None
+                erroneous_attribute = re.search(r"settings(.\w+)+", str(e)).group()
+                key_to_remove = ".".join(erroneous_attribute.split(".")[1:])
+                program_log.warning(e)
+                program_log.warning(f"Removing invalid key '{key_to_remove}'.")
+                profile.settings.pop(key_to_remove)
 
 
 def _set_log_verbosity(verbosity):
@@ -127,9 +134,6 @@ def _set_log_verbosity(verbosity):
                 program_log, logging.StreamHandler, logging.DEBUG
             )
 
-def _get_value(key_list, dict_):
-    reduced = copy.deepcopy(dict_)
-    for key in key_list:
-        if reduced:
-            reduced = reduced.get(key)
-    return reduced
+
+def _dict_to_keyval_list(values: dict, delimiter: str):
+    return [f"{k}{delimiter}{v}" for k, v in values.items()]

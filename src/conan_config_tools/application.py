@@ -5,11 +5,12 @@ import re
 from contextlib import redirect_stderr
 
 from conan.api.conan_api import ConanAPI
+from conan.api.subapi.profiles import ProfilesAPI
 from conan.tools.env.environment import ProfileEnvironment
-from conans.client.cache.cache import ClientCache
-from conans.client.profile_loader import ProfileLoader, _profile_parse_args
+from conans.client.profile_loader import _profile_parse_args
 from conans.errors import ConanException
 from conans.model.profile import Profile
+from conans.model.settings import Settings
 from conans.util.files import save
 
 from conan_config_tools import logger, program_log
@@ -59,7 +60,6 @@ def set_profile(ctx, **kwargs):
     program_log.debug(f"Conan args: {args}")
 
     conan_api = ConanAPI(cache_folder=conan_home)
-    cache = ClientCache(conan_home)
 
     f = io.StringIO()
     with redirect_stderr(f):
@@ -75,12 +75,13 @@ def set_profile(ctx, **kwargs):
     profile.conf.validate()
 
     # Load conan_home/extensions/plugins/profile.py to validate cppstd
-    loader = ProfileLoader(cache)
-    profile_plugin = loader._load_profile_plugin()
+    profile_api = ProfilesAPI(conan_api)
+    profile_plugin = profile_api._load_profile_plugin()
     if profile_plugin is not None:
         profile_plugin(profile)
     # Ensure the settings specified in the profile are valid or sanitized
-    _validate_settings(profile, cache, kwargs["force"])
+    cache_settings = profile_api._settings()
+    _validate_settings(profile, cache_settings, kwargs["force"])
 
     # Append environment information to profile
     profile.buildenv = ProfileEnvironment.loads("\n".join(buildenv))
@@ -95,20 +96,20 @@ def set_profile(ctx, **kwargs):
     return
 
 
-def _validate_settings(profile: Profile, cache: ClientCache, force: bool):
+def _validate_settings(profile: Profile, cache_settings: Settings, force: bool):
     """Ensure that the settings in the provided profile are consistent with settings.yml in the cache.
 
     :param profile: The profile to validate
     :type profile: `Profile`
-    :param cache: The conan cache object
-    :type cache: `ClientCache`
+    :param cache_settings: The settings from the client cache
+    :type cache_settings: `Settings`
     :param force: A boolean flag indicating whether invalid settings should be sanitized or not. True
     indicates that invalid values will be removed from the profile.
     :type force: bool
     """
     while True:
         try:
-            profile.process_settings(cache)
+            profile.process_settings(cache_settings)
             break
         except ConanException as e:
             if not force:

@@ -80,7 +80,7 @@ def set_profile(ctx, **kwargs):
     if profile_plugin is not None:
         profile_plugin(profile)
     # Ensure the settings specified in the profile are valid or sanitized
-    cache_settings = profile_api._settings()
+    cache_settings = conan_api.config.settings_yml
     _validate_settings(profile, cache_settings, kwargs["force"])
 
     # Append environment information to profile

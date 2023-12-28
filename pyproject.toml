@@ -4,14 +4,14 @@ requires = ["flit_core >=3.2, <4"]
 
 [project]
 name = "conan-config-tools"
-version = "0.2.1"
+version = "0.2.2"
 description = "A tool to facilitate configuration of conan across operating systems"
 authors = [{ name = "Samuel Dowling", email = "samuel.dowling@protonmail.com" }]
 readme = "README.md"
 dependencies = [
     "click",
     "pyyaml",
-    "conan>=2.0.14",
+    "conan>=2.0.15",
 ]
 
 [project.optional-dependencies]
